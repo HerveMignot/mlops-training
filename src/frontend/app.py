@@ -24,7 +24,7 @@ with st.form("prediction_form"):
     with col1:
         education = st.selectbox("Education", ["Bachelors", "Masters", "PHD"])
         joining_year = st.number_input(
-            "Joining Year", min_value=2000, max_value=2030, value=2016
+            "Joining Year", min_value=2000, max_value=2030, value=2020
         )
         city = st.selectbox("City", ["Bangalore", "New Delhi", "Pune"])
         payment_tier = st.selectbox("Payment Tier", [1, 2, 3], index=2)
@@ -42,7 +42,16 @@ with st.form("prediction_form"):
 if submitted:
     payload = {
         "features": [
-            [education, joining_year, city, payment_tier, age, gender, ever_benched, experience]
+            {
+                "Education": education,
+                "JoiningYear": joining_year,
+                "City": city,
+                "PaymentTier": payment_tier,
+                "Age": age,
+                "Gender": gender,
+                "EverBenched": ever_benched,
+                "ExperienceInCurrentDomain": experience,
+            }
         ]
     }
     try:
