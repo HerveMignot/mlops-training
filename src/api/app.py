@@ -4,6 +4,9 @@ from pathlib import Path
 import joblib
 import uvicorn
 import yaml
+
+import pandas as pd
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -31,7 +34,7 @@ app = FastAPI(title="ML Model API", lifespan=lifespan)
 
 
 class PredictRequest(BaseModel):
-    features: list[list[float]]
+    features: list[dict[str, str | int | float]]
 
 
 class PredictResponse(BaseModel):
@@ -40,12 +43,13 @@ class PredictResponse(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": model is not None}
+    return {"status": "ok"} #, "model_loaded": model is not None}
 
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(request: PredictRequest):
-    predictions = model.predict(request.features)
+    df = pd.DataFrame(request.features)
+    predictions = model.predict(df)
     return PredictResponse(predictions=predictions.tolist())
 
 
