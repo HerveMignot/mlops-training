@@ -1,12 +1,12 @@
 import numpy as np
 from sklearn.base import BaseEstimator
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 
 
 def train_model(X: np.ndarray, y: np.ndarray) -> BaseEstimator:
     """Train a model on the given data."""
-    model = LogisticRegression()
+    model = RandomForestClassifier(random_state=42)
     model.fit(X, y)
     return model
 
