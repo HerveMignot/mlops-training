@@ -12,10 +12,18 @@ dependencies = [
     "pandas",
     "jupyter",
     "matplotlib",
+    "mlflow==3.13",
+    "fastapi",
+    "uvicorn[standard]",
+    "pyyaml",
+    "streamlit",
+    "requests",
 ]
 
 [dependency-groups]
 dev = [
+    "mypy",
+    "pre-commit",
     "pytest",
     "ruff",
 ]
