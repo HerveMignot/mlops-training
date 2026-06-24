@@ -1,0 +1,2 @@
+model_path: "models/model.joblib"
+port: 8000
