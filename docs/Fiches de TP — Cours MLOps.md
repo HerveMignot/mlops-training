@@ -1,10 +1,10 @@
 # Fiches de TP — Formation MLOps
 
-Fil rouge unique : un modèle de *credit scoring* (classification *good / bad payer*) ou modèle de rétention de collaborateurs (classification *va rester / va partir*).
+Fil rouge unique : un modèle de prédiction de l'**attrition des collaborateurs** (classification binaire *va rester / va partir*).
 
 
-> Jeu de données : **German Credit** (UCI), récupérable sans authentification via `scikit-learn` :
-> `fetch_openml("credit-g", version=1, as_frame=True)` → 1000 lignes, cible `class` ∈ {good, bad}.
+> Jeu de données : **attrition de collaborateurs**, fourni dans le dépôt : `data/employees.csv`
+> → 4 653 lignes, 8 variables explicatives (`Education`, `JoiningYear`, `City`, `PaymentTier`, `Age`, `Gender`, `EverBenched`, `ExperienceInCurrentDomain`), cible `LeaveOrNot` ∈ {0 = reste, 1 = part} (≈ 34 % de départs).
 
 
 ---
@@ -32,7 +32,7 @@ Créer l'arborescence cible :
 ```
 scoring/
 ├── data/                # données (versionnées via DVC, pas Git)
-├── src/scoring/         # code source (modulaire)
+├── src/training/        # code source (modulaire)
 │   ├── __init__.py
 │   ├── data.py          # chargement / préparation
 │   └── train.py         # entraînement + tracking
@@ -87,38 +87,34 @@ uv add dvc
 dvc init
 git commit -m "Initialize DVC"
 ```
-Script de récupération `src/scoring/data.py` :
+Copier le fichier fourni `employees.csv` dans `data/`, puis écrire le script de chargement `src/training/data.py` :
 ```python
-from sklearn.datasets import fetch_openml
+from pathlib import Path
 
-def load_raw(path="data/credit-g.csv"):
-    """Télécharge le jeu German Credit et l'écrit en CSV."""
-    df = fetch_openml("credit-g", version=1, as_frame=True).frame
-    df.to_csv(path, index=False)
-    return df
+import pandas as pd
+
+def load_data(path: str | Path = "data/employees.csv") -> pd.DataFrame:
+    """Charge le jeu de données d'attrition des collaborateurs."""
+    return pd.read_csv(path)
 
 if __name__ == "__main__":
-    load_raw()
+    print(load_data().head())
 ```
-Générer puis suivre la donnée avec DVC :
+Vérifier le chargement puis suivre la donnée avec DVC :
 ```bash
-uv run python -m scoring.data
-dvc add data/credit-g.csv
-git add data/credit-g.csv.dvc data/.gitignore
+uv run python -m training.data
+dvc add data/employees.csv
+git add data/employees.csv.dvc data/.gitignore
 git commit -m "data: Track raw data with DVC"
 ```
 **Option (niveau 1 de maturité) — pipeline DVC** `dvc.yaml` :
 ```yaml
 stages:
-  prepare:
-    cmd: python -m scoring.data
-    outs:
-      - data/credit-g.csv
   train:
-    cmd: python -m scoring.train
+    cmd: python -m training.train
     deps:
-      - data/credit-g.csv
-      - src/scoring/train.py
+      - data/employees.csv
+      - src/training/train.py
     outs:
       - models/model.joblib
 ```
@@ -132,7 +128,7 @@ Lancer le serveur dans un terminal dédié :
 ```bash
 uv run mlflow server --host 127.0.0.1 --port 8080
 ```
-Script d'entraînement `src/scoring/train.py` :
+Script d'entraînement `src/training/train.py` :
 ```python
 import mlflow, joblib
 import pandas as pd
@@ -144,13 +140,13 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 mlflow.set_tracking_uri("http://127.0.0.1:8080")
-mlflow.set_experiment("credit-scoring")
+mlflow.set_experiment("employee-attrition")
 
 def main(n_estimators: int = 200, max_depth: int = 8) -> None:
-    df = pd.read_csv("data/credit-g.csv")
-    y = (df.pop("class") == "good").astype(int)
+    df = pd.read_csv("data/employees.csv")
+    y = df.pop("LeaveOrNot")          # 1 = le collaborateur part, 0 = il reste
     X = df
-    cat = X.select_dtypes("object").columns.tolist()
+    cat = X.select_dtypes(include=["object", "string"]).columns.tolist()
     pre = ColumnTransformer(
         [("cat", OneHotEncoder(handle_unknown="ignore"), cat)],
         remainder="passthrough",
@@ -177,18 +173,18 @@ if __name__ == "__main__":
 Lancer plusieurs runs avec des hyperparamètres différents :
 ```bash
 mkdir -p models
-uv run python -m scoring.train      # run 1
+uv run python -m training.train      # run 1
 # modifier n_estimators / max_depth, relancer pour générer d'autres runs
 ```
 **Exercice :** dans l'UI MLflow (http://127.0.0.1:8080), comparer les runs, trier par `test_auc`, identifier la meilleure configuration.
 
 ## TP 1.6 — Model Registry
-Dans l'UI : ouvrir le meilleur run → **Register Model** → nom `credit-scoring` → version 1.
+Dans l'UI : ouvrir le meilleur run → **Register Model** → nom `employee-attrition` → version 1.
 Ou en code :
 ```python
 import mlflow
 result = mlflow.register_model(
-    model_uri="runs:/<RUN_ID>/model", name="credit-scoring")
+    model_uri="runs:/<RUN_ID>/model", name="employee-attrition")
 ```
 Affecter un alias (ex. `champion`) à la meilleure version dans l'UI.
 *Notions : versions, alias, tags, traçabilité run ↔ modèle ↔ données.*
@@ -205,7 +201,7 @@ $env:MLFLOW_TRACKING_URI = "http://localhost:5000"
 puis :
 
 ```bash
-uv run mlflow models serve -m "models:/credit-scoring/1" -p 5001 --no-conda
+uv run mlflow models serve -m "models:/employee-attrition/1" -p 5001 --no-conda
 ```
 Tester avec une requête :
 ```bash
@@ -263,7 +259,7 @@ Charger le CSV dans une table et faire une requête d'exploration :
 ```bash
 bq mk --dataset ${PROJECT_ID}:scoring
 bq load --autodetect --source_format=CSV \
-  scoring.credit data/credit-g.csv
+  scoring.employees data/employees.csv
 ```
 *Montre l'usage de BigQuery comme source de données dans la boucle Dev.*
 
@@ -273,7 +269,7 @@ Deux options à présenter :
 ```python
 from google.cloud import aiplatform
 aiplatform.init(project="PROJECT_ID", location="europe-west1",
-                experiment="credit-scoring")
+                experiment="employee-attrition")
 ```
 2. **MLflow distant** (continuité avec le TP 1) : pointer `set_tracking_uri` vers un serveur MLflow hébergé (Cloud Run).
 
@@ -289,7 +285,7 @@ aiplatform.init(project="PROJECT_ID", location="europe-west1",
                 staging_bucket="gs://PROJECT_ID-mlops")
 
 model = aiplatform.Model.upload(
-    display_name="credit-scoring",
+    display_name="employee-attrition",
     artifact_uri="gs://PROJECT_ID-mlops/model",
     serving_container_image_uri=(
         "europe-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-3:latest"
@@ -308,7 +304,7 @@ endpoint = model.deploy(
 # une instance = une ligne de features (mêmes colonnes que l'entraînement)
 print(endpoint.predict(instances=[[...]]))
 ```
-**Exercice :** envoyer 2–3 profils (un « bon » et un « mauvais » payeur) et interpréter la prédiction.
+**Exercice :** envoyer 2–3 profils de collaborateurs (un qui devrait rester, un qui risque de partir) et interpréter la prédiction.
 
 ## TP 2.7 — (Option) Prédiction par lot (*batch*)
 Préparer un fichier d'entrées dans GCS, lancer un `BatchPredictionJob`, récupérer les sorties.
