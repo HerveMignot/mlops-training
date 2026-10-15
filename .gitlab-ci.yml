@@ -1,0 +1,284 @@
+# =============================================================================
+# TP MLOps : CI/CD d'un modèle de prédiction d'attrition des collaborateurs
+# Les repères [A1]..[C5] renvoient aux étapes du déroulé du TP.
+# =============================================================================
+#
+# Contrat avec le dépôt (fichiers attendus) :
+#   pyproject.toml              pandas, scikit-learn, joblib, pandera, mlflow, pyyaml,
+#   (ou requirements.txt)       fastapi, uvicorn, httpx, ruff, pytest, pytest-cov
+#   params.yaml                 hyperparamètres + seuils des quality gates
+#   baseline.json               métriques du modèle de référence (versionné)
+#   data/employees.csv          jeu de données
+#   src/validate_data.py        schéma pandera ; code retour != 0 si invalide
+#   src/train.py                --data --params --out ; écrit artifacts/model.joblib
+#                               et artifacts/metrics.json ; journalise dans MLflow
+#   src/evaluate.py             --metrics --params --baseline --report ;
+#                               code retour != 0 si un gate échoue ; écrit toujours
+#                               le rapport Markdown
+#   scripts/post_mr_comment.py  publie le rapport en commentaire de MR (API GitLab,
+#                               variable MR_COMMENT_TOKEN, bibliothèque standard)
+#   tests/                      tests unitaires (feature engineering)
+#   tests_integration/          tests de l'API ; lit API_URL ; attend /health
+#   Dockerfile                  COPY artifacts/model.joblib ; lance uvicorn (port 8000)
+#
+# Variable CI/CD à créer (Settings > CI/CD > Variables) :
+#   MR_COMMENT_TOKEN   jeton personnel, scope "api", masquée
+#
+# Choix volontaire : PAS de `needs` entre stages. L'ordre strict des stages donne
+# un "fail fast" : une erreur de lint évite l'entraînement, donc économise le
+# quota de minutes de calcul.
+# =============================================================================
+
+stages:
+  - lint
+  - test
+  - data
+  - train
+  - evaluate
+  - package
+  - integration
+  - deploy
+
+variables:
+  # Image de base. Remplacer par l'image préconstruite du TP (dépendances déjà
+  # installées) pour gagner 1 à 2 minutes par job.
+  BASE_IMAGE: "python:3.12-slim"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # Image de l'API d'inférence, dans le Container Registry du projet.
+  IMAGE: "$CI_REGISTRY_IMAGE/api"
+  CURL_IMAGE: "curlimages/curl:8.10.1"
+
+# [A1] Quand un pipeline s'exécute : sur merge request et sur la branche par
+# défaut, jamais en double (branche + MR), ou à la demande depuis l'interface.
+# Une branche sans MR ouverte ne déclenche rien : c'est voulu, pour le quota.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+  auto_cancel:
+    on_new_commit: interruptible
+
+default:
+  image: $BASE_IMAGE
+  interruptible: true
+  timeout: 10 minutes
+
+# -----------------------------------------------------------------------------
+# Modèles réutilisables (jobs cachés)
+# -----------------------------------------------------------------------------
+.python-setup:
+  cache:
+    key:
+      files:
+        - requirements.txt
+    paths:
+      - .cache/pip
+  before_script:
+    - pip install --quiet -r requirements.txt
+
+# Ne lancer lint et tests que si le code change (levier d'économie de quota).
+.rules-code-changes:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - changes:
+        - src/**/*
+        - tests/**/*
+        - requirements.txt
+        - .gitlab-ci.yml
+
+.rules-main:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.docker-job:
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+# =============================================================================
+# PARTIE A : CI classique appliquée au code ML
+# =============================================================================
+
+# [A2] Qualité de code : l'erreur la moins chère se détecte en premier.
+# L'utilisation de precommits peut réduire le besoin de cette étape.
+lint:
+  stage: lint
+  extends: [.python-setup, .rules-code-changes]
+  script:
+    - ruff check src tests tests_integration scripts
+    - ruff format --check src tests tests_integration scripts
+
+# [A3] Tests unitaires du code ML (préparation des données, feature engineering).
+unit-tests:
+  stage: test
+  extends: [.python-setup, .rules-code-changes]
+  script:
+    - pytest tests --junitxml=report.xml --cov=src --cov-report=term --cov-report=xml:coverage.xml
+  coverage: '/TOTAL.*\s+(\d+(?:\.\d+)?)%/'
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+# =============================================================================
+# PARTIE B : spécificités ML
+# =============================================================================
+
+# [B1] Validation des données : le pipeline échoue si le schéma n'est pas respecté.
+validate-data:
+  stage: data
+  extends: .python-setup
+  script:
+    - python src/validate_data.py data/employees.csv
+
+# [B2] Entraînement ; suivi MLflow local (SQLite) versé en artefact.
+train:
+  stage: train
+  extends: .python-setup
+  variables:
+    MLFLOW_TRACKING_URI: "sqlite:///mlflow.db" # Ou "http://127.0.0.1:5000"
+    MLFLOW_EXPERIMENT_NAME: "attrition-ci"
+  script:
+    - python src/train.py --data data/employees.csv --params params.yaml --out artifacts
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - artifacts/
+      - mlflow.db
+      - mlruns/
+
+# [B3] Quality gate : seuils absolus (params.yaml) et non-régression (baseline.json).
+# Le rapport est conservé même en cas d'échec pour pouvoir être commenté dans la MR.
+evaluate:
+  stage: evaluate
+  extends: .python-setup
+  dependencies: [train]
+  script:
+    - python src/evaluate.py --metrics artifacts/metrics.json --params params.yaml --baseline baseline.json --report artifacts/report.md
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - artifacts/report.md
+
+# [B4] Reporting dans la MR. S'exécute même si le gate a échoué ; n'est pas
+# bloquant (allow_failure) : un jeton absent ne doit pas casser le pipeline.
+mr-report:
+  stage: evaluate
+  needs:
+    - job: evaluate
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: always
+  allow_failure: true
+  script:
+    - python scripts/post_mr_comment.py artifacts/report.md
+
+# =============================================================================
+# PARTIE C : livraison et déploiement
+# =============================================================================
+
+# [C1] Versionnement du modèle dans le Package Registry, lié au commit.
+# Uniquement sur la branche par défaut, une fois les gates passés.
+publish-model:
+  stage: package
+  extends: .rules-main
+  image:
+    name: $CURL_IMAGE
+    entrypoint: [""]
+  dependencies: [train]
+  interruptible: false
+  script:
+    - |
+      for f in model.joblib metrics.json; do
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+          --upload-file "artifacts/$f" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/attrition-model/${CI_COMMIT_SHORT_SHA}/$f"
+      done
+
+# [C2] Image de l'API d'inférence (modèle embarqué), taguée par SHA de commit.
+# Construite aussi sur les MR : les tests d'intégration testent l'artefact livré.
+build-image:
+  stage: package
+  extends: .docker-job
+  dependencies: [train]
+  script:
+    - docker build --pull --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" -t "$IMAGE:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+
+# [C3] Tests d'intégration : l'image est lancée comme service ; les tests
+# appellent /health et /predict et vérifient le contrat de l'API.
+integration-tests:
+  stage: integration
+  extends: .python-setup
+  dependencies: []
+  services:
+    - name: $IMAGE:$CI_COMMIT_SHORT_SHA
+      alias: api
+  variables:
+    API_URL: "http://api:8000"
+  script:
+    - pytest tests_integration --junitxml=report-integration.xml
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: report-integration.xml
+
+# [C4] Déploiement. Simulé : l'image est tirée, démarrée dans un Docker
+# temporaire, son /health est vérifié, puis le déploiement est enregistré dans
+# l'environnement GitLab (historique, rollback). Remplaçable par ssh, helm,
+# kubectl, etc.
+.deploy:
+  stage: deploy
+  extends: [.docker-job, .rules-main]
+  interruptible: false
+  dependencies: []
+  script:
+    - docker pull "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker run -d --name "api-$DEPLOY_ENV" -p 8000:8000 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - |
+      for i in $(seq 1 15); do
+        wget -qO- "http://docker:8000/health" && break
+        sleep 2
+      done
+    - wget -qO- "http://docker:8000/health"
+    - echo "Déployé en $DEPLOY_ENV l'image $IMAGE:$CI_COMMIT_SHORT_SHA"
+
+deploy-staging:
+  extends: .deploy
+  variables:
+    DEPLOY_ENV: staging
+  environment:
+    name: staging
+
+# Mise en production : décision humaine. Le pipeline reste "bloqué" tant que le
+# job n'est pas lancé.
+deploy-production:
+  extends: .deploy
+  variables:
+    DEPLOY_ENV: production
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: false
+
+# [C5] Rollback : aucun job dédié. Depuis Operate > Environments, le bouton
+# "Rollback environment" relance le job de déploiement du déploiement précédent,
+# donc redéploie l'image taguée avec l'ancien SHA.
