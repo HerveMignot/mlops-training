@@ -12,7 +12,7 @@ dependencies = [
     "pandas",
     "jupyter",
     "matplotlib",
-    "mlflow==3.13",
+    "mlflow",
     "fastapi",
     "uvicorn[standard]",
     "pyyaml",
