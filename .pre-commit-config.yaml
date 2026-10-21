@@ -1,10 +1,49 @@
 repos:
+  # Hooks standards pre-commit
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # --- Sécurité ---
+      - id: detect-private-key          # blocs PEM : SSH, service accounts GCP, certs Azure
+
+      # --- Fins de ligne / whitespace ---
+      - id: mixed-line-ending           # normalise CRLF -> LF
+        args: [--fix=lf]
+      - id: trailing-whitespace         # espaces en fin de ligne
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer           # newline finale unique
+
+      # --- Validation de syntaxe ---
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+
+      # --- Hygiène Git ---
+      - id: check-added-large-files     # bloque > 500 kB par défaut
+        args: [--maxkb=1000]
+      - id: check-merge-conflict        # marqueurs <<<<<<< oubliés
+      - id: check-case-conflict         # collisions macOS/Windows
+      # - id: no-commit-to-branch       # décommenter pour protéger main/master
+
+      # --- Python ---
+      - id: debug-statements            # breakpoint() / pdb oubliés
+
+  # Détection de secrets (règles GCP : gcp-api-key ; Azure : azure-ad-client-secret,
+  # connection strings, tokens SAS ; +160 autres types)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.2
+    hooks:
+      - id: gitleaks
+
+  # Lint + format Python
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.18
     hooks:
-      - id: ruff            # lint + corrections
+      - id: ruff                        # lint + corrections
         args: [--fix]
-      - id: ruff-format     # formatage (alternative à black)
+      - id: ruff-format                 # formatage (alternative à black)
+
+  # Typage statique
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v2.1.0
     hooks:
