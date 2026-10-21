@@ -42,7 +42,16 @@ with st.form("prediction_form"):
 if submitted:
     payload = {
         "features": [
-            [education, joining_year, city, payment_tier, age, gender, ever_benched, experience]
+            {
+                "Education": education,
+                "JoiningYear": joining_year,
+                "City": city,
+                "PaymentTier": payment_tier,
+                "Age": age,
+                "Gender": gender,
+                "EverBenched": ever_benched,
+                "ExperienceInCurrentDomain": experience,
+            }
         ]
     }
     try:

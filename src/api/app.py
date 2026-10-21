@@ -2,6 +2,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import joblib
+import mlflow
+import pandas as pd
 import uvicorn
 import yaml
 from fastapi import FastAPI
@@ -22,8 +24,13 @@ model = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model
-    model_path = Path(config["model_path"])
-    model = joblib.load(model_path)
+    model_uri = config.get("model_uri")
+    if model_uri:
+        mlflow.set_tracking_uri(config["mlflow_tracking_uri"])
+        model = mlflow.pyfunc.load_model(model_uri)
+    else:
+        model_path = Path(config["model_path"])
+        model = joblib.load(model_path)
     yield
 
 
@@ -31,7 +38,7 @@ app = FastAPI(title="ML Model API", lifespan=lifespan)
 
 
 class PredictRequest(BaseModel):
-    features: list[list[float]]
+    features: list[dict[str, str | int | float]]
 
 
 class PredictResponse(BaseModel):
@@ -45,7 +52,8 @@ def health():
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(request: PredictRequest):
-    predictions = model.predict(request.features)
+    df = pd.DataFrame(request.features)
+    predictions = model.predict(df)
     return PredictResponse(predictions=predictions.tolist())
 
 

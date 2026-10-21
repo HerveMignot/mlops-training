@@ -1,2 +1,4 @@
-model_path: "models/model.joblib"
-port: 8000
+mlflow_tracking_uri: "http://localhost:5000"
+model_uri: "models:/employee-attrition@champion"
+
+model_path: "models/employee_attrition_model.joblib"
