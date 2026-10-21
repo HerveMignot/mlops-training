@@ -1,1 +1,5 @@
+# Mode = "custom" or "mlflow"
+# Lancement de MLflow en service de modèle : uv run mlflow models serve -p 5001 -m models:/employee-attrition@champion --no-conda
+# Sinon, lancement de l'API FastAPI : uv run python -m api.app --reload --port 5001
+mode: "custom"
 api_url: "http://localhost:8000"

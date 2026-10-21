@@ -40,25 +40,65 @@ with st.form("prediction_form"):
     submitted = st.form_submit_button("Predict")
 
 if submitted:
-    payload = {
-        "features": [
-            {
-                "Education": education,
-                "JoiningYear": joining_year,
-                "City": city,
-                "PaymentTier": payment_tier,
-                "Age": age,
-                "Gender": gender,
-                "EverBenched": ever_benched,
-                "ExperienceInCurrentDomain": experience,
-            }
-        ]
-    }
+    mode = config.get("mode", "custom")
     try:
-        response = requests.post(f"{API_URL}/predict", json=payload, timeout=10)
-        response.raise_for_status()
-        result = response.json()
-        prediction = result["predictions"][0]
+        if mode == "mlflow":
+            payload = {
+                "dataframe_split": {
+                    "columns": [
+                        "Education",
+                        "JoiningYear",
+                        "City",
+                        "PaymentTier",
+                        "Age",
+                        "Gender",
+                        "EverBenched",
+                        "ExperienceInCurrentDomain",
+                    ],
+                    "data": [
+                        [
+                            education,
+                            int(joining_year),
+                            city,
+                            int(payment_tier),
+                            int(age),
+                            gender,
+                            ever_benched,
+                            int(experience),
+                        ]
+                    ],
+                }
+            }
+            response = requests.post(
+                f"{API_URL}/invocations",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            result = response.json()
+            prediction = result["predictions"][0]
+        else:
+            payload = {
+                "features": [
+                    {
+                        "Education": education,
+                        "JoiningYear": joining_year,
+                        "City": city,
+                        "PaymentTier": payment_tier,
+                        "Age": age,
+                        "Gender": gender,
+                        "EverBenched": ever_benched,
+                        "ExperienceInCurrentDomain": experience,
+                    }
+                ]
+            }
+            response = requests.post(
+                f"{API_URL}/predict", json=payload, timeout=10
+            )
+            response.raise_for_status()
+            result = response.json()
+            prediction = result["predictions"][0]
         if prediction == 1:
             st.error("Prediction: **Employee is likely to leave**")
         else:
